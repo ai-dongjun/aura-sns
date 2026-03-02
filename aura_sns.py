@@ -6,6 +6,28 @@ from PIL import Image
 import base64
 import io
 import time
+import json
+import os
+
+# ── 관리자 페이지에서 저장한 프롬프트 로드 ──
+def load_custom_prompts():
+    defaults = {
+        "context":   """{industry} | {tone} | {target}\n무드/감성: {mood} | 브랜드: {brand}\n핵심 키워드: {keywords}\n주제 및 방향:\n{topic}""",
+        "instagram": None,  # None이면 코드 내 기본값 사용
+        "youtube":   None,
+        "threads":   None,
+        "hashtags":  None,
+    }
+    if os.path.exists("prompts.json"):
+        try:
+            with open("prompts.json", "r", encoding="utf-8") as f:
+                saved = json.load(f)
+            defaults.update(saved)
+        except:
+            pass
+    return defaults
+
+CUSTOM_PROMPTS = load_custom_prompts()
 
 # ══════════════════════════════════════════════════════
 # PAGE CONFIG
@@ -591,18 +613,18 @@ def ctx():
     if st.session_state.sample_library:
         labels = [s["label"] for s in st.session_state.sample_library[-3:]]
         lib_hint = f"\n샘플 스타일 참고: {', '.join(labels)}"
-    return f"""
-분야: {industry}  |  톤앤매너: {tone}  |  타겟: {target}
-무드/감성: {mood}  |  브랜드: {brand or '없음'}
-핵심 키워드: {keywords or '없음'}
-주제 및 방향:
-{topic}
-{lib_hint}
-"""
+    template = CUSTOM_PROMPTS.get("context", "")
+    try:
+        return template.format(
+            industry=industry, tone=tone, target=target,
+            mood=mood, brand=brand or "없음",
+            keywords=keywords or "없음", topic=topic
+        ) + lib_hint
+    except Exception:
+        return f"분야: {industry} | 톤: {tone} | 타겟: {target}\n무드: {mood} | 브랜드: {brand or '없음'}\n키워드: {keywords or '없음'}\n주제: {topic}\n{lib_hint}"
 
 def p_instagram():
-    return f"""{ctx()}
-인스타그램 피드 콘텐츠를 아래 형식으로 작성하세요.
+    body = CUSTOM_PROMPTS.get("instagram") or """인스타그램 피드 콘텐츠를 아래 형식으로 작성하세요.
 
 ━━━━━━━━━━━━━━━━━━━━━
 📝 캡션 버전 A — 감성/스토리텔링형
@@ -630,8 +652,8 @@ def p_instagram():
 ━━━━━━━━━━━━━━━━━━━━━
 💬 스토리 & 릴스용 짧은 문구 (5가지)
 ━━━━━━━━━━━━━━━━━━━━━
-(각 15자 이내, 임팩트 있게)
-"""
+(각 15자 이내, 임팩트 있게)"""
+    return f"{ctx()}\n{body}"
 
 def p_youtube():
     length_map = {
