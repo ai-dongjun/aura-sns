@@ -780,7 +780,7 @@ if gen_btn:
         st.warning("📱 플랫폼을 최소 1개 선택해 주세요.")
     else:
         genai.configure(api_key=gemini_key)
-        model = genai.GenerativeModel("gemini-2.0-flash")
+        model = genai.GenerativeModel("gemini-2.5-flash")
 
         # 이미지 파트 준비
         image_parts = []
