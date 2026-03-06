@@ -2,12 +2,13 @@ import streamlit as st
 import datetime
 import google.generativeai as genai
 from concurrent.futures import ThreadPoolExecutor
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont, ImageEnhance
 import base64
 import io
 import time
 import json
 import os
+import textwrap
 
 # ── 관리자 페이지에서 저장한 프롬프트 로드 ──
 def load_custom_prompts():
@@ -452,6 +453,9 @@ for k, v in {
     "sample_library": [],
     "gen_count": 0,
     "last_gen_time": None,
+    "card_image": None,
+    "card_caption_text": "",
+    "card_hashtag_text": "",
 }.items():
     if k not in st.session_state:
         st.session_state[k] = v
@@ -750,6 +754,155 @@ def p_hashtags():
 ━━━━━━━━━━━━━━━━━━━━━
 """
 
+
+# ══════════════════════════════════════════════════════
+# 카드 이미지 생성 함수들
+# ══════════════════════════════════════════════════════
+def apply_filter(img, filter_type):
+    if filter_type == "🌸 핑크 필름":
+        r, g, b = img.split()
+        r = r.point(lambda x: min(255, int(x * 1.15)))
+        b = b.point(lambda x: int(x * 0.88))
+        img = Image.merge("RGB", (r, g, b))
+        img = ImageEnhance.Contrast(img).enhance(0.92)
+        img = ImageEnhance.Brightness(img).enhance(1.08)
+    elif filter_type == "🖤 무드 다크":
+        img = ImageEnhance.Brightness(img).enhance(0.75)
+        img = ImageEnhance.Contrast(img).enhance(1.3)
+        img = ImageEnhance.Saturation(img).enhance(0.65)
+    elif filter_type == "☀️ 비비드":
+        img = ImageEnhance.Saturation(img).enhance(1.45)
+        img = ImageEnhance.Contrast(img).enhance(1.1)
+        img = ImageEnhance.Brightness(img).enhance(1.05)
+    elif filter_type == "🎞️ 빈티지 필름":
+        img = ImageEnhance.Saturation(img).enhance(0.72)
+        img = ImageEnhance.Contrast(img).enhance(0.9)
+        img = ImageEnhance.Brightness(img).enhance(1.06)
+        r, g, b = img.split()
+        r = r.point(lambda x: min(255, int(x * 1.1)))
+        b = b.point(lambda x: int(x * 0.82))
+        img = Image.merge("RGB", (r, g, b))
+    elif filter_type == "🌿 내추럴":
+        img = ImageEnhance.Saturation(img).enhance(0.88)
+        img = ImageEnhance.Brightness(img).enhance(1.07)
+        img = ImageEnhance.Contrast(img).enhance(0.95)
+    elif filter_type == "❄️ 쿨 톤":
+        r, g, b = img.split()
+        r = r.point(lambda x: int(x * 0.87))
+        b = b.point(lambda x: min(255, int(x * 1.13)))
+        img = Image.merge("RGB", (r, g, b))
+        img = ImageEnhance.Brightness(img).enhance(1.06)
+    return img
+
+def make_card(photo, main_text, sub_text, brand_text,
+              text_pos_x, text_pos_y, text_color,
+              font_size_main, overlay_opacity, filter_type,
+              card_size, text_align, add_gradient):
+    SIZE_MAP = {
+        "📱 정방형 (1080×1080)": (1080, 1080),
+        "📱 세로형 (1080×1350)": (1080, 1350),
+        "📱 스토리 (1080×1920)": (1080, 1920),
+    }
+    W, H = SIZE_MAP.get(card_size, (1080, 1080))
+
+    img = photo.convert("RGB")
+    img_ratio = img.width / img.height
+    card_ratio = W / H
+    if img_ratio > card_ratio:
+        new_h = H; new_w = int(H * img_ratio)
+    else:
+        new_w = W; new_h = int(W / img_ratio)
+    img = img.resize((new_w, new_h), Image.LANCZOS)
+    left = (new_w - W) // 2; top = (new_h - H) // 2
+    img = img.crop((left, top, left + W, top + H))
+
+    if filter_type != "✨ 원본":
+        img = apply_filter(img, filter_type)
+
+    overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+
+    if add_gradient:
+        grad = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        gd = ImageDraw.Draw(grad)
+        mid = int(H * text_pos_y / 100)
+        # 텍스트 위치 기준으로 그라디언트
+        start = max(0, mid - H//3); end = min(H, mid + H//3)
+        for y in range(start, end):
+            ratio = 1 - abs(y - mid) / (H // 3 + 1)
+            alpha = int(overlay_opacity * ratio * 1.5)
+            alpha = min(255, alpha)
+            gd.line([(0, y), (W, y)], fill=(0, 0, 0, alpha))
+        overlay = Image.alpha_composite(overlay, grad)
+        draw = ImageDraw.Draw(overlay)
+
+    try:
+        font_main  = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size_main)
+        font_sub   = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", max(24, font_size_main - 22))
+        font_brand = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", max(28, font_size_main - 26))
+    except:
+        font_main = font_sub = font_brand = ImageFont.load_default()
+
+    def hex_to_rgba(h, a=255):
+        h = h.lstrip("#")
+        r,g,b = int(h[0:2],16), int(h[2:4],16), int(h[4:6],16)
+        return (r, g, b, a)
+
+    txt_rgba = hex_to_rgba(text_color)
+    padding = int(W * 0.07)
+
+    def shadow_text(d, text, font, x, y, fill, s=3):
+        d.text((x+s, y+s), text, font=font, fill=(0,0,0,170))
+        d.text((x, y), text, font=font, fill=fill)
+
+    def text_x(text, font):
+        try:
+            bbox = draw.textbbox((0,0), text, font=font)
+            tw = bbox[2] - bbox[0]
+        except:
+            tw = len(text) * (font_size_main // 2)
+        if text_align == "중앙": return (W - tw) // 2
+        elif text_align == "오른쪽": return W - tw - padding
+        else: return padding
+
+    # 텍스트 Y 위치 (슬라이더값 0~100 → 픽셀)
+    cur_y = int(H * text_pos_y / 100)
+    max_chars = max(6, int((W - padding*2) / (font_size_main * 0.65)))
+    for line in textwrap.fill(main_text, width=max_chars).split("\n"):
+        shadow_text(draw, line, font_main, text_x(line, font_main), cur_y, txt_rgba)
+        try:
+            bbox = draw.textbbox((0,0), line, font=font_main)
+            cur_y += (bbox[3]-bbox[1]) + int(font_size_main*0.18)
+        except:
+            cur_y += font_size_main + 10
+
+    cur_y += int(font_size_main * 0.25)
+    if sub_text.strip():
+        max_c2 = max(10, int((W - padding*2) / (font_size_main * 0.4)))
+        for line in textwrap.fill(sub_text, width=max_c2).split("\n"):
+            shadow_text(draw, line, font_sub, text_x(line, font_sub), cur_y, txt_rgba, s=2)
+            try:
+                bbox = draw.textbbox((0,0), line, font=font_sub)
+                cur_y += (bbox[3]-bbox[1]) + 6
+            except:
+                cur_y += font_size_main - 14
+
+    if brand_text.strip():
+        try:
+            bbox = draw.textbbox((0,0), brand_text, font=font_brand)
+            bw = bbox[2]-bbox[0]
+        except:
+            bw = len(brand_text)*20
+        shadow_text(draw, brand_text, font_brand, (W-bw)//2, H - int(H*0.06), txt_rgba, s=2)
+
+    result = Image.alpha_composite(img.convert("RGBA"), overlay)
+    return result.convert("RGB")
+
+def card_to_bytes(img):
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", dpi=(300,300))
+    return buf.getvalue()
+
 # ══════════════════════════════════════════════════════
 # GENERATION
 # ══════════════════════════════════════════════════════
@@ -780,7 +933,7 @@ if gen_btn:
         st.warning("📱 플랫폼을 최소 1개 선택해 주세요.")
     else:
         genai.configure(api_key=gemini_key)
-        model = genai.GenerativeModel("gemini-2.5-flash")
+        model = genai.GenerativeModel("gemini-2.0-flash")
 
         # 이미지 파트 준비
         image_parts = []
@@ -900,14 +1053,14 @@ if st.session_state.generated and st.session_state.results:
         "🧵 스레드/X":  ("stripe-thread","rtag-thread"),
     }
 
-    for i, (name, content) in enumerate(st.session_state.results.items()):
+    for i, (name, content_val) in enumerate(st.session_state.results.items()):
         with tabs[i]:
             sc, tc = stripe_map.get(name, ("stripe-insta","rtag-insta"))
             st.markdown(f"""
             <div class="rcard">
                 <div class="rcard-stripe {sc}"></div>
                 <span class="rtag {tc}">{name}</span>
-                <div class="rcontent">{content}</div>
+                <div class="rcontent">{content_val}</div>
             </div>
             """, unsafe_allow_html=True)
 
@@ -916,11 +1069,117 @@ if st.session_state.generated and st.session_state.results:
                 short = name.replace("📸","").replace("📺","").replace("🧵","").strip()
                 st.download_button(
                     f"⬇ {short} 저장",
-                    data=content,
+                    data=content_val,
                     file_name=f"{short}_{topic[:10].replace(' ','_')}.txt",
                     mime="text/plain",
                     use_container_width=True
                 )
+
+            # ── 인스타그램 탭에만 카드 메이커 추가 ──
+            if name == "📸 인스타그램":
+                st.markdown("""
+                <div style="margin-top:2rem;padding-top:1.5rem;border-top:1px solid #F0D9E8;">
+                <div style="font-family:'DM Mono',monospace;font-size:0.62rem;letter-spacing:0.15em;
+                            text-transform:uppercase;color:#FF6B9D;margin-bottom:1rem;">
+                    🖼️ 카드 이미지 생성 — 바로 인스타 업로드
+                </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                card_col1, card_col2 = st.columns([1, 1], gap="large")
+
+                with card_col1:
+                    st.markdown("**📸 사진 업로드**")
+                    card_photo = st.file_uploader(
+                        "카드용 사진", type=["jpg","jpeg","png","webp"],
+                        key="card_photo_upload", label_visibility="collapsed"
+                    )
+                    if card_photo:
+                        st.image(Image.open(card_photo), use_container_width=True)
+
+                    st.markdown("**✍️ 텍스트**")
+                    card_main  = st.text_input("메인 카피 (굵은 텍스트)", placeholder="예: 데님의 기준점", key="card_main")
+                    card_sub   = st.text_area("서브 텍스트 (선택)", placeholder="예: 10년 뒤에도 기록될", height=70, key="card_sub")
+                    card_brand = st.text_input("브랜드명 (하단)", placeholder="예: @계정명", key="card_brand")
+
+                    st.markdown("**🎨 스타일**")
+                    c_filter = st.selectbox("필터", [
+                        "✨ 원본","🌸 핑크 필름","🖤 무드 다크",
+                        "☀️ 비비드","🎞️ 빈티지 필름","🌿 내추럴","❄️ 쿨 톤"
+                    ], key="card_filter")
+                    c_size = st.selectbox("카드 사이즈", [
+                        "📱 정방형 (1080×1080)","📱 세로형 (1080×1350)","📱 스토리 (1080×1920)"
+                    ], key="card_size")
+
+                    st.markdown("**📍 텍스트 위치 (직접 조절)**")
+                    c_pos_y = st.slider("위아래 위치 (0=상단 / 100=하단)", 0, 90, 60, key="card_pos_y")
+                    c_align = st.radio("정렬", ["왼쪽","중앙","오른쪽"], horizontal=True, key="card_align")
+
+                    st.markdown("**🎨 텍스트 옵션**")
+                    cc1, cc2 = st.columns(2)
+                    with cc1:
+                        c_color    = st.color_picker("텍스트 색상", "#FFFFFF", key="card_color")
+                        c_fontsize = st.slider("글자 크기", 40, 140, 80, step=5, key="card_fontsize")
+                    with cc2:
+                        c_grad    = st.checkbox("그라디언트 추가", value=True, key="card_grad")
+                        c_opacity = st.slider("어둡기", 0, 255, 150, step=10, key="card_opacity")
+
+                with card_col2:
+                    st.markdown("**👁️ 미리보기 & 다운로드**")
+
+                    if st.button("🖼️ 카드 이미지 생성", key="card_gen_btn", use_container_width=True):
+                        if not card_photo:
+                            st.warning("📸 사진을 먼저 업로드해 주세요.")
+                        elif not card_main.strip():
+                            st.warning("✍️ 메인 카피를 입력해 주세요.")
+                        else:
+                            with st.spinner("카드 생성 중..."):
+                                photo_img = Image.open(card_photo)
+                                card_result = make_card(
+                                    photo=photo_img,
+                                    main_text=card_main,
+                                    sub_text=card_sub,
+                                    brand_text=card_brand,
+                                    text_pos_x=50,
+                                    text_pos_y=c_pos_y,
+                                    text_color=c_color,
+                                    font_size_main=c_fontsize,
+                                    overlay_opacity=c_opacity,
+                                    filter_type=c_filter,
+                                    card_size=c_size,
+                                    text_align=c_align,
+                                    add_gradient=c_grad
+                                )
+                                st.session_state.card_image = card_result
+                            st.success("✦ 완성!")
+
+                    if st.session_state.card_image is not None:
+                        card = st.session_state.card_image
+                        pw = 380
+                        ph = int(pw * card.height / card.width)
+                        st.image(card.resize((pw, ph), Image.LANCZOS), use_container_width=True)
+
+                        fname = (card_main[:10] if card_main else "card").replace(" ","_")
+                        st.download_button(
+                            "⬇ PNG 다운로드 (인스타 업로드용)",
+                            data=card_to_bytes(card),
+                            file_name=f"aura_{fname}.png",
+                            mime="image/png",
+                            use_container_width=True,
+                            key="card_dl_btn"
+                        )
+                    else:
+                        st.markdown("""
+                        <div style="background:linear-gradient(135deg,#FFF5FB,#F5EEFF);
+                                    border:1.5px dashed #E8C8E8;border-radius:14px;
+                                    padding:3rem 1rem;text-align:center;color:#B8A0BC;">
+                            <div style="font-size:2rem;margin-bottom:0.75rem;">🖼️</div>
+                            <div style="font-size:0.82rem;line-height:1.7;">
+                                사진 + 텍스트 입력 후<br>
+                                <strong style="color:#C77DFF;">카드 이미지 생성</strong> 버튼 클릭
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True)
 
     # 해시태그 탭
     with tabs[-1]:
